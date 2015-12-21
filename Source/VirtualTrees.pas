@@ -65,7 +65,12 @@ interface
 {$HPPEMIT '#include <oleidl.h>'}
 {$HPPEMIT '#include <oleacc.h>'}
 {$HPPEMIT '#include <ShlObj.hpp>'}
-{$HPPEMIT '#pragma link "VirtualTreesR.lib"'}
+{$ifdef BCB}
+  {$HPPEMIT '#pragma link "VirtualTreesCR.lib"'}
+{$else}
+  {$HPPEMIT '#pragma link "VirtualTreesR.lib"'}
+{$endif}
+{$HPPEMIT '#pragma link "Shell32.lib"'}
 
 uses
   Winapi.Windows, Winapi.oleacc, Winapi.Messages, System.SysUtils, Vcl.Graphics,
@@ -74,7 +79,7 @@ uses
   Winapi.ShlObj, System.UITypes, System.Generics.Collections;
 
 const
-  VTVersion = '6.2.0';
+  VTVersion = '6.2.1';
 
 const
   VTTreeStreamVersion = 2;
@@ -2250,7 +2255,6 @@ type
     procedure FixupTotalCount(Node: PVirtualNode);
     procedure FixupTotalHeight(Node: PVirtualNode);
     function GetBottomNode: PVirtualNode;
-    function GetCheckedCount: Integer;
     function GetCheckState(Node: PVirtualNode): TCheckState;
     function GetCheckType(Node: PVirtualNode): TCheckType;
     function GetChildCount(Node: PVirtualNode): Cardinal;
@@ -2575,6 +2579,7 @@ type
     procedure FinishChunkHeader(Stream: TStream; StartPos, EndPos: Integer); virtual;
     procedure FontChanged(AFont: TObject); virtual;
     function GetBorderDimensions: TSize; virtual;
+    function GetCheckedCount: Integer;
     function GetCheckImage(Node: PVirtualNode; ImgCheckType: TCheckType = ctNone;
       ImgCheckState: TCheckState = csUncheckedNormal; ImgEnabled: Boolean = True): Integer; virtual;
     class function GetCheckImageListFor(Kind: TCheckImageKind): TCustomImageList; virtual;
@@ -3012,6 +3017,7 @@ type
                             Mode: TVTNodeAttachMode; Optimized: Boolean): Boolean;
     procedure RepaintNode(Node: PVirtualNode);
     procedure ReinitChildren(Node: PVirtualNode; Recursive: Boolean); virtual;
+    procedure InitRecursive(Node: PVirtualNode; Levels: Cardinal = MaxInt; pVisibleOnly: Boolean = True);
     procedure ReinitNode(Node: PVirtualNode; Recursive: Boolean); virtual;
     procedure ResetNode(Node: PVirtualNode); virtual;
     procedure SaveToFile(const FileName: TFileName);
@@ -4004,7 +4010,7 @@ const
   WideLF = Char(#10);
 
 var
-  Watcher: TCriticalSection;
+  gWatcher: TCriticalSection = nil;
   LightCheckImages,                    // global light check images
   DarkCheckImages,                     // global heavy check images
   LightTickImages,                     // global light tick images
@@ -4014,7 +4020,7 @@ var
   UtilityImages,                       // some small additional images (e.g for header dragging)
   SystemCheckImages,                   // global system check images
   SystemFlatCheckImages: TImageList;   // global flat system check images
-  Initialized: Boolean = False;        // True if global structures have been initialized.
+  gInitialized: Integer = 0;           // >0 if global structures have been initialized; otherwise 0
   NeedToUnitialize: Boolean = False;   // True if the OLE subsystem could be initialized successfully.
 
 
@@ -4113,7 +4119,7 @@ var
   Dest: TRect;
 
 begin
-  Watcher.Enter;
+  gWatcher.Enter();
   try
     // Since we want the image list appearing in the correct system colors, we have to remap its colors.
     Images := TBitmap.Create;
@@ -4146,7 +4152,7 @@ begin
       OneImage.Free;
     end;
   finally
-    Watcher.Leave;
+    gWatcher.Leave();
   end;
 end;
 
@@ -4264,7 +4270,7 @@ end;
 
 
 
-procedure InitializeGlobalStructures;
+procedure InitializeGlobalStructures();
 
 // initialization of stuff global to the unit
 
@@ -4272,7 +4278,11 @@ var
   Flags: Cardinal;
 
 begin
-  Initialized := True;
+  if (gInitialized > 0) or (InterlockedIncrement(gInitialized) <> 1) then // Ensure threadsafe that this code is executed only once
+    exit;
+
+  // This watcher is used whenever a global structure could be modified by more than one thread.
+  gWatcher := TCriticalSection.Create();
 
   // For the drag image a fast MMX blend routine is used. We have to make sure MMX is available.
   MMXAvailable := HasMMX;
@@ -4347,12 +4357,15 @@ end;
 
 //----------------------------------------------------------------------------------------------------------------------
 
-procedure FinalizeGlobalStructures;
+procedure FinalizeGlobalStructures();
 
 var
   HintWasEnabled: Boolean;
 
 begin
+  if gInitialized = 0 then
+    exit; // Was not initialized
+
   LightCheckImages.Free;
   LightCheckImages := nil;
   DarkCheckImages.Free;
@@ -4385,6 +4398,8 @@ begin
     if HintWasEnabled then
       Application.ShowHint := True;
   end;
+  gWatcher.Free;
+  gWatcher := nil;
 end;
 
 
@@ -11866,10 +11881,16 @@ begin
     case Index of
       0:
         StyleServices.GetElementColor(StyleServices.GetElementDetails(ttItemDisabled), ecTextColor, Result); // DisabledColor
-      1, 2, 3, 6, 10, 12, 13:
-        Result := StyleServices.GetSystemColor(clHighlight); // 1:DropMarkColor 2:DropTargetColor 3: FocusedSelectionColor
-                                                             // 6:UnfocusedSelectionColor 10:UnfocusedSelectionBorderColor
-                                                             // 12:SelectionRectangleBlendColor 13:SelectionRectangleBorderColor
+      1, 2, 3, 12, 13:
+        if FColors[Index] = clHighlight then // the default value?
+          Result := StyleServices.GetSystemColor(clHighlight)  // 1:DropMarkColor 2:DropTargetColor 3: FocusedSelectionColor
+        else                                                   // 12:SelectionRectangleBlendColor 13:SelectionRectangleBorderColor
+          Result := FColors[Index];
+      6, 10:
+        if FColors[Index] = clBtnFace then // the default value?
+          Result := StyleServices.GetSystemColor(clHighlight) // 6:UnfocusedSelectionColor 10:UnfocusedSelectionBorderColor
+        else
+          Result := FColors[Index];
       4:
         Result := StyleServices.GetSystemColor(clBtnFace); // GridLineColor
       5:
@@ -12013,8 +12034,7 @@ end;
 constructor TBaseVirtualTree.Create(AOwner: TComponent);
 
 begin
-  if not Initialized then
-    InitializeGlobalStructures;
+  InitializeGlobalStructures();
 
   inherited;
 
@@ -13651,6 +13671,30 @@ begin
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
+
+procedure TBaseVirtualTree.InitRecursive(Node: PVirtualNode; Levels: Cardinal = MaxInt; pVisibleOnly: Boolean = True);
+
+// Initializes a node and optionally its children up to a certain level.
+
+var
+  Run: PVirtualNode;
+begin
+  if Assigned(Node) then begin
+    if (Node <> FRoot) and not (vsInitialized in Node.States) then
+      InitNode(Node);
+    if (Levels = 0) or (pVisibleOnly and not (vsExpanded in Node.States))  then
+      exit;
+    Run := Node.FirstChild;
+  end
+  else
+    Run := FRoot.FirstChild;
+
+  while Assigned(Run) do
+  begin
+    InitRecursive(Run, Levels - 1, pVisibleOnly);
+    Run := Run.NextSibling;
+  end;
+end;
 
 procedure TBaseVirtualTree.InitRootNode(OldSize: Cardinal = 0);
 
@@ -17420,13 +17464,9 @@ begin
     DC := GetDCEx(Handle, Message.Rgn, Flags or DCX_INTERSECTRGN);
 
   if DC <> 0 then
-  begin
-    if hoVisible in FHeader.FOptions then
-    begin
-      R := FHeaderRect;
-      FHeader.FColumns.PaintHeader(DC, R, -FEffectiveOffsetX);
-    end;
+  try
     OriginalWMNCPaint(DC);
+  finally
     ReleaseDC(Handle, DC);
   end;
   if (((tsUseThemes in FStates) and not VclStyleEnabled) or (VclStyleEnabled and (seBorder in StyleElements))) then
@@ -17439,7 +17479,8 @@ end;
 //----------------------------------------------------------------------------------------------------------------------
 
 procedure TBaseVirtualTree.WMPaint(var Message: TWMPaint);
-
+var
+  DC: HDC;
 begin
   if tsVCLDragging in FStates then
     ImageList_DragShowNolock(False);
@@ -17447,11 +17488,22 @@ begin
     FUpdateRect := ClientRect
   else
     GetUpdateRect(Handle, FUpdateRect, True);
-  
+
   inherited;
- 
+
   if tsVCLDragging in FStates then
     ImageList_DragShowNolock(True);
+
+  if hoVisible in FHeader.FOptions then
+  begin
+    DC := GetDCEx(Handle, 0, DCX_CACHE or DCX_CLIPSIBLINGS or DCX_WINDOW or DCX_VALIDATE);
+    if DC <> 0 then
+      try
+        FHeader.FColumns.PaintHeader(DC, FHeaderRect, -FEffectiveOffsetX);
+    finally
+      ReleaseDC(Handle, DC);
+    end;
+  end;//if header visible
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -17832,6 +17884,8 @@ begin
     Changed := InternalAddToSelection(FSingletonNodeArray, 1, False);
     if Changed then
     begin
+      if (SelectedCount = 1) then
+        FocusedNode := Node; // if only one node is selected, make sure the focused node changes with the selected node
       InvalidateNode(Node);
       Change(Node);
     end;
@@ -18225,7 +18279,7 @@ begin
 
   if FUpdateCount = 0 then
   begin
-    if (FChangeDelay > 0) and not (tsSynchMode in FStates) then
+    if (FChangeDelay > 0) and HandleAllocated and not (tsSynchMode in FStates) then
       SetTimer(Handle, ChangeTimer, FChangeDelay, nil)
     else
       DoChange(Node);
@@ -23618,6 +23672,7 @@ var
   ForegroundColor: COLORREF;
   R: TRect;
   Details: TThemedElementDetails;
+  lSize: TSize;
 begin
   with ImageInfo do
   begin
@@ -23655,8 +23710,8 @@ begin
       else
         Details := StyleServices.GetElementDetails(tbButtonRoot);
       end;
-      //StyleServices.GetElementSize(Canvas.Handle, Details, TElementSize.esActual, lSize);
-      R := Rect(XPos, YPos, XPos + Self.fCheckImages.Width, YPos + Self.fCheckImages.Height);
+      StyleServices.GetElementSize(Canvas.Handle, Details, TElementSize.esActual, lSize);
+      R := Rect(XPos, YPos, XPos + lSize.cx, YPos + lSize.cy);
       StyleServices.DrawElement(Canvas.Handle, Details, R);
       if Index in [21..24] then
         UtilityImages.Draw(Canvas, XPos, YPos, 4);
@@ -24807,7 +24862,7 @@ begin
 
   if FUpdateCount = 0 then
   begin
-    if (FChangeDelay > 0) and not (tsSynchMode in FStates) then
+    if (FChangeDelay > 0) and HandleAllocated and not (tsSynchMode in FStates) then
       SetTimer(Handle, StructureChangeTimer, FChangeDelay, nil)
     else
       DoStructureChange(Node, Reason);
@@ -25740,6 +25795,7 @@ end;
 procedure TBaseVirtualTree.BeginUpdate;
 
 begin
+  Assert(GetCurrentThreadId = MainThreadId, 'UI controls like ' + Classname + ' should only be manipulated through the main thread.');
   if not (csDestroying in ComponentState) then
   begin
     if FUpdateCount = 0 then
@@ -33761,7 +33817,7 @@ end;
 function TCustomVirtualStringTree.InternalData(Node: PVirtualNode): Pointer;
 
 begin
-  if (Node = FRoot) or (Node = nil) or (FInternalDataOffset = 0) then
+  if (Node = nil) or (FInternalDataOffset = 0) then
     Result := nil
   else
     Result := PByte(Node) + Self.NodeDataSize + FInternalDataOffset;
@@ -34448,14 +34504,8 @@ begin
 end;
 
 initialization
-  // This watcher is used whenever a global structure could be modified by more than one thread.
-  Watcher := TCriticalSection.Create;
 
 finalization
-  if Initialized then
-    FinalizeGlobalStructures;
-
-  Watcher.Free;
-  Watcher := nil;
+  FinalizeGlobalStructures();
 
 end.
