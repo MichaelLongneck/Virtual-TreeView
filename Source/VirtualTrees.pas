@@ -79,7 +79,7 @@ uses
   Winapi.ShlObj, System.UITypes, System.Generics.Collections;
 
 const
-  VTVersion = '6.2.1';
+  VTVersion = '6.2.3';
 
 const
   VTTreeStreamVersion = 2;
@@ -621,7 +621,7 @@ type
     function GetData(): Pointer; overload; inline;
     function GetData<T>(): T; overload; inline;
     procedure SetData(pUserData: Pointer); overload;
-    procedure SetData<T:class>(pUserData: T); overload;
+    procedure SetData<T>(pUserData: T); overload;
     procedure SetData(const pUserData: IInterface); overload;
   end;
 
@@ -2425,6 +2425,7 @@ type
     procedure ChangeTreeStatesAsync(EnterStates, LeaveStates: TChangeStates);
     procedure ChangeScale(M, D: Integer); override;
     function CheckParentCheckState(Node: PVirtualNode; NewCheckState: TCheckState): Boolean; virtual;
+    procedure ClearSelection(pFireChangeEvent: Boolean); overload; virtual;
     procedure ClearTempCache; virtual;
     function ColumnIsEmpty(Node: PVirtualNode; Column: TColumnIndex): Boolean; virtual;
     function ComputeRTLOffset(ExcludeScrollBar: Boolean = False): Integer; virtual;
@@ -2886,7 +2887,7 @@ type
     function CanFocus: Boolean; override;
     procedure Clear; virtual;
     procedure ClearChecked;
-    procedure ClearSelection;
+    procedure ClearSelection(); overload; inline;
     function CopyTo(Source: PVirtualNode; Tree: TBaseVirtualTree; Mode: TVTNodeAttachMode;
       ChildrenOnly: Boolean): PVirtualNode; overload;
     function CopyTo(Source, Target: PVirtualNode; Mode: TVTNodeAttachMode;
@@ -3028,7 +3029,7 @@ type
     procedure SetCheckStateForAll(aCheckState: TCheckState; pSelectedOnly: Boolean);
     procedure SetNodeData(pNode: PVirtualNode; pUserData: Pointer); overload; inline;
     procedure SetNodeData(pNode: PVirtualNode; const pUserData: IInterface); overload; inline;
-    procedure SetNodeData<T:class>(pNode: PVirtualNode; pUserData: T); overload;
+    procedure SetNodeData<T>(pNode: PVirtualNode; pUserData: T); overload;
     procedure Sort(Node: PVirtualNode; Column: TColumnIndex; Direction: TSortDirection; DoInit: Boolean = True); virtual;
     procedure SortTree(Column: TColumnIndex; Direction: TSortDirection; DoInit: Boolean = True); virtual;
     procedure ToggleNode(Node: PVirtualNode);
@@ -13679,15 +13680,14 @@ procedure TBaseVirtualTree.InitRecursive(Node: PVirtualNode; Levels: Cardinal = 
 var
   Run: PVirtualNode;
 begin
-  if Assigned(Node) then begin
-    if (Node <> FRoot) and not (vsInitialized in Node.States) then
-      InitNode(Node);
-    if (Levels = 0) or (pVisibleOnly and not (vsExpanded in Node.States))  then
-      exit;
-    Run := Node.FirstChild;
-  end
-  else
-    Run := FRoot.FirstChild;
+  if not Assigned(Node) then
+    Node := FRoot;
+
+  if (Node <> FRoot) and not (vsInitialized in Node.States) then
+    InitNode(Node);
+  if (Levels = 0) or (pVisibleOnly and not (vsExpanded in Node.States))  then
+    exit;
+  Run := Node.FirstChild;
 
   while Assigned(Run) do
   begin
@@ -14528,10 +14528,6 @@ begin
           StructureChange(nil, crChildAdded)
         else
           StructureChange(Node, crChildAdded);
-
-        // One may want to reinit the nodes here, especially to fix Issue #572 but that may trigger
-        // stack overflows in user code that calls AddChild inside the OnInitNode or OnInitChildren events.
-        //ReinitNode(Node, True);
       end;
     end;
   end;
@@ -14780,7 +14776,7 @@ begin
       Include(Node.States, vsFiltered);
       if not (toShowFilteredNodes in FOptions.FPaintOptions) then
       begin
-        if vsInitializing in Node.States then
+        if (vsInitializing in Node.States) and not (vsHasChildren in Node.States) then
           AdjustTotalHeight(Node, 0, False)
         else
           AdjustTotalHeight(Node, -Integer(NodeHeight[Node]), True);
@@ -14959,7 +14955,7 @@ procedure TBaseVirtualTree.SetNodeData<T>(pNode: PVirtualNode; pUserData: T);
   // Can be used to set user data of a PVirtualNode to a class instance.
 
 begin
-  SetNodeData(pNode, Pointer(pUserData));
+  pNode.SetData<T>(pUserData);
 end;
 
 procedure TBaseVirtualTree.SetNodeData(pNode: PVirtualNode; const pUserData: IInterface);
@@ -18291,7 +18287,7 @@ end;
 procedure TBaseVirtualTree.ChangeScale(M, D: Integer);
 
 begin
-  inherited;
+  inherited ChangeScale(M, D);
 
   if (M <> D) and (toAutoChangeScale in FOptions.FAutoOptions) then
   begin
@@ -19890,6 +19886,8 @@ end;
 
 procedure TBaseVirtualTree.DoFreeNode(Node: PVirtualNode);
 
+var
+  IntfData: IInterface;
 begin
   // Prevent invalid references
   if Node = FLastChangedNode then
@@ -19909,7 +19907,12 @@ begin
     FOnFreeNode(Self, Node);
 
   if vsReleaseCallOnUserDataRequired in Node.States then
-    GetInterfaceFromNodeData<IInterface>(Node)._Release();
+  begin
+    // Data may have been set to nil, in which case we can't call _Release on it
+    IntfData := GetInterfaceFromNodeData<IInterface>(Node);
+    if Assigned(IntfData) then
+      IntfData._Release();
+  end;
 
   FreeMem(Node);
   if Self.UpdateCount = 0 then
@@ -22494,7 +22497,7 @@ begin
       end;
     end
     else if not ((hiNowhere in HitInfo.HitPositions) and (toAlwaysSelectNode in Self.TreeOptions.SelectionOptions)) then // When clicking in the free space we don't want the selection to be cleared in case toAlwaysSelectNode is set
-      ClearSelection;
+      ClearSelection(False);
   end;
 
   // pending node edit
@@ -22558,6 +22561,9 @@ begin
       DoFocusChange(FFocusedNode, FFocusedColumn);
     end;
   end;
+
+  if SelectedCount = 0 then
+    Change(nil);
 
   // Drag'n drop initiation
   // If we lost focus in the interim the button states would be cleared in WM_KILLFOCUS.
@@ -23129,7 +23135,7 @@ begin
       // amNoWhere: do nothing
     end;
     // Remove temporary states.
-    Node.States := Node.States - [vsChecking, vsCutOrCopy, vsDeleting, vsReleaseCallOnUserDataRequired];
+    Node.States := Node.States - [vsChecking, vsCutOrCopy, vsDeleting];
 
     if (Mode <> amNoWhere) then begin
       Inc(Node.Parent.ChildCount);
@@ -24418,6 +24424,7 @@ begin
   if not FSelectionLocked then
   begin
     Assert(Assigned(Node), 'Node must not be nil!');
+    Assert(GetCurrentThreadId = MainThreadId, Self.Classname + '.RemoveFromSelection() must only be called from UI thread.');
     if vsSelected in Node.States then
     begin
       Exclude(Node.States, vsSelected);
@@ -25943,7 +25950,14 @@ end;
 
 //----------------------------------------------------------------------------------------------------------------------
 
-procedure TBaseVirtualTree.ClearSelection;
+procedure TBaseVirtualTree.ClearSelection();
+begin
+  ClearSelection(True);
+end;
+
+//----------------------------------------------------------------------------------------------------------------------
+
+procedure TBaseVirtualTree.ClearSelection(pFireChangeEvent: Boolean);
 
 var
   Node: PVirtualNode;
@@ -25981,7 +25995,8 @@ begin
     end;
 
     InternalClearSelection;
-    Change(nil);
+    if pFireChangeEvent then
+      Change(nil);
   end;
 end;
 
@@ -26265,7 +26280,7 @@ begin
         WasInSynchMode := tsSynchMode in FStates;
         Include(FStates, tsSynchMode);
         RemoveFromSelection(Node);
-        EnsureNodeSelected();
+        //EnsureNodeSelected(); // also done in  DoFreeNode()
         if not WasInSynchMode then
           Exclude(FStates, tsSynchMode);
         InvalidateToBottom(LastParent);
@@ -28949,11 +28964,9 @@ begin
               if Assigned(Result.PrevSibling) then
               begin
                 // No children anymore, so take the previous sibling.
-                if vsVisible in Result.PrevSibling.States then
-                begin
-                  Result := Result.PrevSibling;
+                Result := Result.PrevSibling;
+                if vsVisible in Result.States then
                   Break;
-                end;
               end
               else
               begin
@@ -34291,20 +34304,21 @@ begin
     Data := InternalData(Node);
     if Assigned(Data) then
       Data^ := 0;
-
-    Exclude(Node.States, vsHeightMeasured);
   end;
 
-  if Assigned(Node) then
-    Run := Node.FirstChild
-  else
-    Run := FRoot.FirstChild;
-
-  while Assigned(Run) do
+  if Recursive then
   begin
-    ResetInternalData(Run, Recursive);
-    Run := Run.NextSibling;
-  end;
+    if Assigned(Node) then
+      Run := Node.FirstChild
+    else
+      Run := FRoot.FirstChild;
+
+    while Assigned(Run) do
+    begin
+      ResetInternalData(Run, Recursive);
+      Run := Run.NextSibling;
+    end;
+  end;//if Recursive
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -34314,7 +34328,7 @@ procedure TCustomVirtualStringTree.ReinitNode(Node: PVirtualNode; Recursive: Boo
 begin
   inherited;
 
-  ResetInternalData(Node, False);  // False because there already is a loop inside ReinitNode
+  ResetInternalData(Node, False);  // False because we are already in a loop inside ReinitNode
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -34323,11 +34337,7 @@ procedure TCustomVirtualStringTree.SetChildCount(Node: PVirtualNode; NewChildCou
 
 begin
   inherited;
-
-  // See comment at the end of TBaseVirtualTree.SetChildCount
-  //ReinitChildren(Node, True);
-
-  ResetInternalData(Node, True);
+  ResetInternalData(Node, False);
 end;
 
 //----------------- TVirtualStringTree ---------------------------------------------------------------------------------
@@ -34481,7 +34491,10 @@ end;
 procedure TVirtualNode.SetData<T>(pUserData: T);
 
 begin
-  SetData(Pointer(pUserData));
+  T(Pointer((PByte(@(Self.Data))))^) := pUserData;
+  if PTypeInfo(TypeInfo(T)).Kind = tkInterface then
+    Include(Self.States, vsReleaseCallOnUserDataRequired);
+  Include(Self.States, vsOnFreeNodeCallRequired);
 end;
 
 { TVTImageInfo }
