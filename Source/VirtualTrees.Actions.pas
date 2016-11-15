@@ -219,7 +219,7 @@ procedure TVirtualTreePerItemAction.ExecuteTarget(Target: TObject);
 begin
   DoBeforeExecute();
   try
-    Control.IterateSubtree(nil, Self.fToExecute, nil, fFilter);
+    Control.IterateSubtree(nil, Self.fToExecute, nil, fFilter, true);
   finally
     DoAfterExecute();
   end;
@@ -235,7 +235,8 @@ begin
   fDesiredCheckState := csCheckedNormal;
   fToExecute := procedure(Sender: TBaseVirtualTree; Node: PVirtualNode; Data: Pointer; var Abort: Boolean)
                 begin
-                  Control.CheckState[Node] := fDesiredCheckState;
+                  if not Control.CheckState[Node].IsDisabled then
+                    Control.CheckState[Node] := fDesiredCheckState;
                 end;
 end;
 
