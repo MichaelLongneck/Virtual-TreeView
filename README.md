@@ -4,7 +4,9 @@ Virtual Treeview is a Delphi treeview control built from ground up. Many years o
 ###Downloads
 **V6** official release for **RAD Studio XE3 to 10.1 Berlin**: [JAM Software](http://www.jam-software.com/virtual-treeview/)
 
-For a **Delphi XE and XE2** compatible fork see: [sglienke/Virtual-TreeView](https://github.com/sglienke/Virtual-TreeView)
+For a **Delphi XE2** compatible fork see: [Fr0sT-Brutal/VirtualTreeView_mod/tree/fr0st_xe2](https://github.com/Fr0sT-Brutal/VirtualTreeView_mod/tree/fr0st_xe2)
+
+For a **Delphi XE** compatible fork see: [sglienke/Virtual-TreeView](https://github.com/sglienke/Virtual-TreeView)
 
 **V5.5.3** for **Delphi 7 to XE2**: [Download](http://www.jam-software.com/virtual-treeview/VirtualTreeViewV5.5.3.zip)
 
@@ -14,7 +16,7 @@ For installation instruction see the "INSTALL.TXT" file in the ZIP. [Delphinus](
 
 ###[Recent Changes and Latest News](https://raw.githubusercontent.com/Virtual-TreeView/Virtual-TreeView/master/CHANGES.txt)
 
-**V6.4.1** has been officially released: [Download](https://www.jam-software.de/customers/downloadTrial.php?article_no=407&language=EN)
+**V6.5.0** has been officially released: [Download](https://www.jam-software.de/customers/downloadTrial.php?article_no=407&language=EN)
 
 ###Technical Support
 Please do not contact developers or JAM Software for technical support. Please try to get support from the community e.g. at [Stack Overflow](http://stackoverflow.com/search?q=%22virtual+treeview%22) , [Delphi Pages](http://www.delphipages.com/), [Delphi Praxis](http://www.delphipraxis.net/141465-virtual-treeview-tutorials-mit-beispielen.html) or [Embarcadero forums](https://forums.embarcadero.com/). Please do not use the issue tracker for getting support, only for reporting true bugs (see below).
@@ -29,7 +31,7 @@ We currently focus on reducing the number of reported bugs and getting Virtual T
 If you want to contribute, you are welcome. We always look for help, not only for the development of the Virtual Treeview control itself, but also for maintaining the sample projects, the help or the wiki. Please send an email to: joachim(dot)marder(a)gmail.com
 
 ###License
-Virtual Treeview is published under a double license: MPL 1.1 and LGPL 2.1.
+Virtual Treeview is published under a double license: MPL 1.1 and LGPL 2.1 with static linking excpetion as described here: http://wiki.freepascal.org/modified_LGPL
 
 ###New project owner
 JAM Software took Virtual Treeview under its wing in 2014, but not much will change besides the homepage and download location.
